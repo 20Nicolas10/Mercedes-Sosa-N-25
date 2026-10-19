@@ -492,8 +492,9 @@
   <hr style="margin:22px 0">
   <h3>Panel de administrador</h3>
   <div id="admin-login">
-    <p>Ingresá la contraseña de administrador para moderar los comentarios.</p>
-    <input id="admin-password" type="password" placeholder="Contraseña de administrador" autocomplete="current-password">
+    <p>Ingresá el correo y la contraseña de la cuenta administradora de Firebase.</p>
+    <input id="admin-email" type="email" placeholder="Correo administrador" autocomplete="username">
+    <input id="admin-password" type="password" placeholder="Contraseña" autocomplete="current-password">
     <button type="button" id="btn-admin-login">Ingresar</button>
     <p id="admin-error" role="status"></p>
   </div>
@@ -512,112 +513,145 @@
 
     </button>
 </div>
+<script src="https://www.gstatic.com/firebasejs/10.14.1/firebase-app-compat.js"></script>
+<script src="https://www.gstatic.com/firebasejs/10.14.1/firebase-auth-compat.js"></script>
+<script src="https://www.gstatic.com/firebasejs/10.14.1/firebase-database-compat.js"></script>
 <script>
 (() => {
-  const STORAGE_KEY = 'convivencia25_comentarios_v1';
-  const ADMIN_PASSWORD = 'MercedesSosaN°25';
-  let admin = false;
-  let comments = [];
-  try { comments = JSON.parse(localStorage.getItem(STORAGE_KEY) || '[]'); if (!Array.isArray(comments)) comments = []; }
-  catch (_) { comments = []; }
-
+  const firebaseConfig = {
+    apiKey: "AIzaSyD8xK3x9lfMJ3wuMv2g3_fDe3SzafvCVNo",
+    authDomain: "mercedes-sosa-n25.firebaseapp.com",
+    databaseURL: "https://mercedes-sosa-n25-default-rtdb.firebaseio.com",
+    projectId: "mercedes-sosa-n25",
+    storageBucket: "mercedes-sosa-n25.firebasestorage.app",
+    messagingSenderId: "355507307053",
+    appId: "1:355507307053:web:df39340e6bae831aabeea4"
+  };
+  // Debe coincidir con el correo de la cuenta administradora y con las reglas de Firebase.
+  const ADMIN_EMAIL = "mateorap8162@gmail.com";
   const $ = id => document.getElementById(id);
-  const escapeHTML = value => String(value).replace(/[&<>"']/g, ch => ({
-    '&':'&amp;', '<':'&lt;', '>':'&gt;', '"':'&quot;', "'":'&#39;'
-  }[ch]));
-  const save = () => {
-    try { localStorage.setItem(STORAGE_KEY, JSON.stringify(comments)); }
-    catch (_) { alert('No se pudieron guardar los comentarios en este navegador.'); }
-  };
-  const dateText = value => {
-    try { return new Date(value).toLocaleString('es-AR'); } catch (_) { return ''; }
-  };
+  const escapeHTML = value => String(value ?? '').replace(/[&<>"']/g, ch => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[ch]));
+  const dateText = value => { try { return new Date(value).toLocaleString('es-AR'); } catch (_) { return ''; } };
+  let app, auth, db, currentUser = null, admin = false, comments = {}, replies = {}, votesComments = {}, votesReplies = {};
+  const list = $('lista-comentarios');
+  const error = message => { $('admin-error').textContent = message; };
+  const makeId = () => db.ref().push().key;
+  const isAdmin = user => !!user && user.isAnonymous === false && user.email && user.email.toLowerCase() === ADMIN_EMAIL.toLowerCase();
+  const countVotes = (targetVotes, kind) => Object.values(targetVotes || {}).filter(v => v === kind).length;
 
   function render() {
-    const list = $('lista-comentarios');
-    if (!comments.length) {
-      list.innerHTML = '<p>Todavía no hay comentarios. ¡Sé la primera persona en participar!</p>';
-      return;
-    }
-    list.innerHTML = comments.slice().reverse().map(c => `
-      <article class="comentario">
+    const entries = Object.entries(comments || {}).filter(([,c]) => c && typeof c === 'object').sort((a,b) => String(b[1].date || '').localeCompare(String(a[1].date || '')));
+    if (!entries.length) { list.innerHTML = '<p>Todavía no hay comentarios. ¡Sé la primera persona en participar!</p>'; return; }
+    list.innerHTML = entries.map(([id,c]) => {
+      const cv = (votesComments && votesComments[id]) || {};
+      const myVote = currentUser ? cv[currentUser.uid] : null;
+      const childReplies = Object.entries((replies && replies[id]) || {}).sort((a,b) => String(a[1].date || '').localeCompare(String(b[1].date || '')));
+      return `<article class="comentario">
         <div class="meta"><strong>${escapeHTML(c.name)}</strong> · ${escapeHTML(dateText(c.date))}</div>
-        <p>${escapeHTML(c.text).replace(/\n/g, '<br>')}</p>
+        <p>${escapeHTML(c.text).replace(/\n/g,'<br>')}</p>
         <div class="acciones">
-          <button type="button" data-vote="up" data-id="${c.id}">👍🏼 ${c.up || 0}</button>
-          <button type="button" data-vote="down" data-id="${c.id}">👎🏼 ${c.down || 0}</button>
-          <button type="button" data-reply="${c.id}">Responder</button>
-          ${admin ? `<button type="button" data-delete="${c.id}">Eliminar</button>` : ''}
+          <button type="button" data-vote="up" data-id="${escapeHTML(id)}" ${myVote ? 'disabled title="Ya votaste en este comentario"' : ''}>👍🏼 ${countVotes(cv,'up')}</button>
+          <button type="button" data-vote="down" data-id="${escapeHTML(id)}" ${myVote ? 'disabled title="Ya votaste en este comentario"' : ''}>👎🏼 ${countVotes(cv,'down')}</button>
+          <button type="button" data-reply="${escapeHTML(id)}">Responder</button>
+          ${admin ? `<button type="button" data-delete="${escapeHTML(id)}">Eliminar</button>` : ''}
         </div>
-        <div id="reply-form-${c.id}" hidden>
-          <input id="reply-name-${c.id}" maxlength="50" placeholder="Tu nombre o apodo">
-          <textarea id="reply-text-${c.id}" maxlength="700" placeholder="Escribí una respuesta"></textarea>
-          <button type="button" data-send-reply="${c.id}">Publicar respuesta</button>
+        <div id="reply-form-${escapeHTML(id)}" hidden>
+          <input id="reply-name-${escapeHTML(id)}" maxlength="50" placeholder="Tu nombre o apodo">
+          <textarea id="reply-text-${escapeHTML(id)}" maxlength="700" placeholder="Escribí una respuesta"></textarea>
+          <button type="button" data-send-reply="${escapeHTML(id)}">Publicar respuesta</button>
         </div>
-        ${(c.replies || []).map(r => `<div class="respuesta">
-          <div class="meta"><strong>${escapeHTML(r.name)}</strong> · ${escapeHTML(dateText(r.date))}</div>
-          <p>${escapeHTML(r.text).replace(/\n/g, '<br>')}</p>
-          <div class="acciones">
-            <button type="button" data-vote-reply="up" data-parent="${c.id}" data-reply-id="${r.id}">👍🏼 ${r.up || 0}</button>
-            <button type="button" data-vote-reply="down" data-parent="${c.id}" data-reply-id="${r.id}">👎🏼 ${r.down || 0}</button>
-            ${admin ? `<button type="button" data-delete-reply="${r.id}" data-parent="${c.id}">Eliminar respuesta</button>` : ''}
-          </div>
-        </div>`).join('')}
-      </article>`).join('');
+        ${childReplies.map(([rid,r]) => {
+          const rv = (votesReplies && votesReplies[rid]) || {};
+          const myReplyVote = currentUser ? rv[currentUser.uid] : null;
+          return `<div class="respuesta"><div class="meta"><strong>${escapeHTML(r.name)}</strong> · ${escapeHTML(dateText(r.date))}</div>
+            <p>${escapeHTML(r.text).replace(/\n/g,'<br>')}</p><div class="acciones">
+            <button type="button" data-vote-reply="up" data-reply-id="${escapeHTML(rid)}" ${myReplyVote ? 'disabled title="Ya votaste en esta respuesta"' : ''}>👍🏼 ${countVotes(rv,'up')}</button>
+            <button type="button" data-vote-reply="down" data-reply-id="${escapeHTML(rid)}" ${myReplyVote ? 'disabled title="Ya votaste en esta respuesta"' : ''}>👎🏼 ${countVotes(rv,'down')}</button>
+            ${admin ? `<button type="button" data-delete-reply="${escapeHTML(rid)}" data-parent="${escapeHTML(id)}">Eliminar respuesta</button>` : ''}
+            </div></div>`;
+        }).join('')}
+      </article>`;
+    }).join('');
   }
 
-  $('form-comentario').addEventListener('submit', event => {
+  async function start() {
+    try {
+      app = firebase.initializeApp(firebaseConfig); auth = firebase.auth(); db = firebase.database();
+      auth.onAuthStateChanged(async user => {
+        currentUser = user;
+        admin = isAdmin(user);
+        $('admin-login').hidden = admin;
+        $('admin-tools').hidden = !admin;
+        if (!user) {
+          try { await auth.signInAnonymously(); }
+          catch (e) { list.innerHTML = '<p>No se pudo conectar. Revisá que esté habilitado el acceso anónimo en Firebase Authentication.</p>'; }
+          return;
+        }
+        db.ref('comments').on('value', snap => { comments = snap.val() || {}; render(); }, e => { list.innerHTML = '<p>Error al cargar comentarios. Revisá las reglas de Realtime Database.</p>'; console.error(e); });
+        db.ref('replies').on('value', snap => { replies = snap.val() || {}; render(); });
+        db.ref('votesComments').on('value', snap => { votesComments = snap.val() || {}; render(); });
+        db.ref('votesReplies').on('value', snap => { votesReplies = snap.val() || {}; render(); });
+      });
+    } catch (e) { list.innerHTML = '<p>No se pudo iniciar Firebase. Revisá la configuración de la página.</p>'; console.error(e); }
+  }
+
+  $('form-comentario').addEventListener('submit', async event => {
     event.preventDefault();
-    const name = $('nombre-comentario').value.trim();
-    const text = $('texto-comentario').value.trim();
+    if (!currentUser || !currentUser.isAnonymous) { alert('Esperá un momento y volvé a intentar.'); return; }
+    const name = $('nombre-comentario').value.trim(), text = $('texto-comentario').value.trim();
     if (!name || !text) return;
-    comments.push({ id: Date.now().toString(36) + Math.random().toString(36).slice(2,7),
-      name, text, date: new Date().toISOString(), up: 0, down: 0, replies: [] });
-    save(); render(); $('form-comentario').reset();
+    try { const id = makeId(); await db.ref('comments/' + id).set({name, text, date:new Date().toISOString(), uid:currentUser.uid}); $('form-comentario').reset(); }
+    catch (e) { alert('No se pudo publicar. Revisá la configuración de Firebase.'); console.error(e); }
   });
 
-  $('lista-comentarios').addEventListener('click', event => {
+  list.addEventListener('click', async event => {
     const b = event.target.closest('button'); if (!b) return;
-    if (b.dataset.vote) {
-      const c = comments.find(x => x.id === b.dataset.id); if (!c) return;
-      const key = b.dataset.vote === 'up' ? 'up' : 'down'; c[key] = (c[key] || 0) + 1;
-    } else if (b.dataset.reply) {
-      const form = $('reply-form-' + b.dataset.reply); form.hidden = !form.hidden; return;
-    } else if (b.dataset.sendReply) {
-      const c = comments.find(x => x.id === b.dataset.sendReply); if (!c) return;
-      const name = $('reply-name-' + c.id).value.trim();
-      const text = $('reply-text-' + c.id).value.trim();
-      if (!name || !text) { alert('Completá tu nombre o apodo y la respuesta.'); return; }
-      c.replies.push({id: Date.now().toString(36) + Math.random().toString(36).slice(2,7),
-        name, text, date: new Date().toISOString(), up: 0, down: 0});
-    } else if (b.dataset.voteReply) {
-      const c = comments.find(x => x.id === b.dataset.parent); if (!c) return;
-      const r = (c.replies || []).find(x => x.id === b.dataset.replyId); if (!r) return;
-      const key = b.dataset.voteReply === 'up' ? 'up' : 'down'; r[key] = (r[key] || 0) + 1;
-    } else if (b.dataset.delete) {
-      if (!admin) return;
-      if (confirm('¿Eliminar este comentario y sus respuestas?')) comments = comments.filter(x => x.id !== b.dataset.delete);
-    } else if (b.dataset.deleteReply) {
-      if (!admin) return;
-      const c = comments.find(x => x.id === b.dataset.parent); if (!c) return;
-      c.replies = (c.replies || []).filter(x => x.id !== b.dataset.deleteReply);
-    } else return;
-    save(); render();
+    try {
+      if (b.dataset.vote) {
+        const id = b.dataset.id;
+        if (!currentUser || !comments[id]) return;
+        const ref = db.ref(`votesComments/${id}/${currentUser.uid}`);
+        if ((votesComments[id] || {})[currentUser.uid]) { alert('Ya votaste en este comentario.'); return; }
+        await ref.set(b.dataset.vote);
+      } else if (b.dataset.reply) {
+        const form = $('reply-form-' + b.dataset.reply); form.hidden = !form.hidden;
+      } else if (b.dataset.sendReply) {
+        const parent = b.dataset.sendReply;
+        if (!currentUser || !comments[parent]) return;
+        const name = $('reply-name-' + parent).value.trim(), text = $('reply-text-' + parent).value.trim();
+        if (!name || !text) { alert('Completá tu nombre o apodo y la respuesta.'); return; }
+        const id = makeId(); await db.ref('replies/' + parent + '/' + id).set({name,text,date:new Date().toISOString(),uid:currentUser.uid});
+      } else if (b.dataset.voteReply) {
+        const id = b.dataset.replyId;
+        if (!currentUser) return;
+        const ref = db.ref(`votesReplies/${id}/${currentUser.uid}`);
+        if ((votesReplies[id] || {})[currentUser.uid]) { alert('Ya votaste en esta respuesta.'); return; }
+        await ref.set(b.dataset.voteReply);
+      } else if (b.dataset.delete) {
+        if (!admin) return;
+        if (confirm('¿Eliminar este comentario y sus respuestas?')) {
+          const id = b.dataset.delete;
+          await Promise.all([db.ref('comments/' + id).remove(), db.ref('replies/' + id).remove()]);
+        }
+      } else if (b.dataset.deleteReply) {
+        if (!admin) return;
+        if (confirm('¿Eliminar esta respuesta?')) await db.ref('replies/' + b.dataset.parent + '/' + b.dataset.deleteReply).remove();
+      }
+    } catch (e) { alert('La acción no se pudo completar. Revisá las reglas de Firebase.'); console.error(e); }
   });
 
-  $('btn-admin-login').addEventListener('click', () => {
-    if ($('admin-password').value === ADMIN_PASSWORD) {
-      admin = true; $('admin-login').hidden = true; $('admin-tools').hidden = false;
-      $('admin-error').textContent = ''; render();
-    } else $('admin-error').textContent = 'Contraseña incorrecta.';
-    $('admin-password').value = '';
+  $('btn-admin-login').addEventListener('click', async () => {
+    const email = $('admin-email').value.trim(), password = $('admin-password').value;
+    if (!email || !password) { error('Ingresá correo y contraseña.'); return; }
+    if (ADMIN_EMAIL === 'REEMPLAZAR_POR_CORREO_ADMIN') { error('Falta configurar el correo administrador en el código.'); return; }
+    if (email.toLowerCase() !== ADMIN_EMAIL.toLowerCase()) { error('Ese correo no está autorizado como administrador.'); return; }
+    try { await auth.signInWithEmailAndPassword(email, password); error(''); $('admin-password').value = ''; }
+    catch (e) { error('No se pudo iniciar sesión. Revisá el correo y la contraseña de Firebase.'); }
   });
   $('admin-password').addEventListener('keydown', e => { if (e.key === 'Enter') $('btn-admin-login').click(); });
-  $('btn-admin-logout').addEventListener('click', () => {
-    admin = false; $('admin-login').hidden = false; $('admin-tools').hidden = true; render();
-  });
-  render();
+  $('btn-admin-logout').addEventListener('click', async () => { try { await auth.signOut(); await auth.signInAnonymously(); } catch(e) { console.error(e); } });
+  start();
 })();
 </script>
-</body><
+</body>
 </html>
