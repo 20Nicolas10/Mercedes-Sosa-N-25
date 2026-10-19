@@ -597,7 +597,7 @@
 
   $('form-comentario').addEventListener('submit', async event => {
     event.preventDefault();
-    if (!currentUser) { alert('La sesión todavía está cargando. Esperá unos segundos y volvé a intentar.'); return; }
+    if (!currentUser) { alert('La sesión todavía está iniciándose. Esperá unos segundos y volvé a intentar.'); return; }
     const name = $('nombre-comentario').value.trim(), text = $('texto-comentario').value.trim();
     if (!name || !text) return;
     try { const id = makeId(); await db.ref('comments/' + id).set({name, text, date:new Date().toISOString(), uid:currentUser.uid}); $('form-comentario').reset(); }
